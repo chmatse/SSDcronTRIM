@@ -485,8 +485,17 @@ if [ -z $DEINSTALL ]; then
 	done
 
 	# Now the most important part; Let us trim (if this is not a fresh installation)!
-	[ $NewOrOld -eq 1 ] && ${FSTRIM} $MP
-else
+	if [ $NewOrOld -eq 1 ]; then
+		${FSTRIM} $MP
+	else
+		echo "SSDcronTRIM successfully installed for these Mountpoints: $SSD_MOUNT_POINTS"
+		if [ "$ctool" == "crondirs" ];then
+			echo "Look into /etc/cron.{monthly,weekly,daily,hourly} for instances of this script"
+		else
+			echo "Look into ${CRONTAB_DIR} for instances of this script"
+			echo "and also check the installation with crontab -l"
+		fi
+	fi else
 	deinstall
 fi
 
