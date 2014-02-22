@@ -495,7 +495,8 @@ if [ -z $DEINSTALL ]; then
 			echo "Look into ${CRONTAB_DIR} for instances of this script"
 			echo "and also check the installation with crontab -l"
 		fi
-	fi else
+	fi
+else
 	deinstall
 fi
 
