@@ -1,0 +1,496 @@
+#!/bin/bash
+version="1.00"
+
+###########################################################################
+#
+# Program: SSDcronTRIM
+# Author:  Matthias Egger <m.egger@matse.ch>
+# Purpose: intelligent cron job script which automatically
+#          decides how often to trim one or more SSD partitions.
+# History: 
+#          1.00 - 2014-02-22 - Initial Release
+# License:
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+###########################################################################
+
+
+
+##### [ S E T T I N G S ] #################################################
+
+# This script assumes by default that only your root partition '/' is on an
+# SSD. You can add more SSD mount points, separated by spaces. Make sure
+# all mount points are within the quotes. For example:
+# SSD_MOUNT_POINTS="/ /home /media/my_other_ssd"
+SSD_MOUNT_POINTS="/"
+
+# This script will by default generate a man page and install it into your
+# man page folder. Even if that does not interfere with your distribution,
+# you might dislike this behaviour. In that case set MAN_PAGE_INSTALL to
+# false to prevent an installation. By the way, the manual can be viewed
+# with: man SSDcronTRIM
+MAN_PAGE_INSTALL="true"
+
+# By default this script checks with the hdparm program if the given mount
+# point does support trimming. If this system has no hdparm program
+# installed, if you can't or don't want to install hdparm at all AND if
+# you still know the given partitions support trimming, then you can set
+# HDPARM_CHECKS to false.
+HDPARM_CHECKS="true"
+
+# If we can't use the /etc/cron.{monthly,weekly,daily,hourly} directories to
+# install the cronjob, we need some local place. By default we put the crons
+# into the /etc/cron.d directory. This should be available on any system which
+# has a cron daemon running. If not, define a folder here.
+CRONTAB_DIR="/etc/cron.d"
+
+# Normally you do not have to modify the TRIMMABLE_FS variable. It contains
+# a list of available filesystems which are known to support the FITRIM call.
+# The list is created by searching for FITRIM in the kernel sources.
+#
+# cd /usr/src/linux
+# Grep -lr FITRIM fs/ | cut -d/ -f2 | sort | uniq | xargs echo
+TRIMMABLE_FS="btrfs,ext3,ext4,gfs2,jfs,ocfs2,xfs"
+
+
+
+##### [ F U N C T I O N S ] ###############################################
+
+init_check () {
+	# init_check does some initial checks to make sure the dependencies
+	# for this script are available. The function returns a colon
+	# separated list of states. The format is as follows:
+	#
+	# pos 1: root or not root, that is the question :-)
+	# pos 2: any kind of cron tool found?
+	# pos 3: partitions are mounted and fstype supports TRIM?
+	# pos 4: do all disks support TRIM?
+	# pos 5: Kernel supports TRIM?
+	# pos 6: fstrim available?
+
+	# pos1: Are we root?
+	if [ ! -z $USER ]; then
+		[ "$USER" == "root" ] && pos1="root"
+	else
+		find_tool whoami soft
+		if [ ! -z $TOOL ]; then
+			pos1=`${TOOL}`
+		else
+			find_tool who soft
+			[ ! -z $TOOL ] && pos1=`${TOOL} am i|${CUT} -d' ' -f1`
+		fi
+	fi
+	if [ -z $pos1 ] || [ ! "$pos1" == "root" ]; then pos1="nonroot"; fi
+
+	# pos2: cron available?
+	if [ -d /etc/cron.hourly ] && [ -d /etc/cron.daily ] && [ -d /etc/cron.weekly ] && [ -d /etc/cron.monthly ]; then
+		pos2="crondirs"
+	else
+		find_tool crontab soft
+		[ ! -z $TOOL ] && pos2="$TOOL"
+	fi
+	[ -z $pos2 ] && pos2="nocron"
+	
+	# pos3: partitions are mounted and fstype supports TRIM?
+	pos3="supported"
+	lomp="`$MOUNT -t $TRIMMABLE_FS|${TR} [:blank:] :`"
+	for a in $SSD_MOUNT_POINTS;do
+		stat=0
+		for b in $lomp;do
+			curMP="`echo $b|${CUT} -d: -f3`"
+			[ "$curMP" == "$a" ] && stat=1
+		done
+		# If stat is still zero this either means that the partition is not mounted
+		# or it was not on the list, because the partition type was not one of the
+		# filesystems which supports trim.
+		[ $stat -eq 0 ] && pos3="$a"
+	done
+
+	# pos4: trim supported by disks?
+	pos4="hwtrim"
+	if [ "$HDPARM_CHECKS" == "true" ];then
+		find_tool hdparm; HDPARM=$TOOL
+		for a in $SSD_MOUNT_POINTS;do
+			stat=0
+			for b in $lomp;do
+				curPN="`echo $b|${CUT} -d: -f1`"
+				curMP="`echo $b|${CUT} -d: -f3`"
+				if [ "$curMP" == "$a" ];then
+					chkdisk="`$HDPARM -I $curPN|$GREP -i trim`"
+					[ ! -z "$chkdisk" ] && stat=1
+				fi
+			done
+			# stat is still zero? Then the disk does not support trim
+			[ $stat -eq 0 ] && pos4="$a"
+		done
+	fi
+
+	# pos5: Kernel supports TRIM?
+	# Batched discard through fstrim is available since:
+	#          ext4 - Kernel 2.6.37
+	# ext2,ext3,xfs	- Kernel 2.6.38
+	#         btrfs - Kernel 2.6.39
+	# So as a consensus we check if kernel is at least 2.6.40
+	kv=`$UNAME -r|$SED  -e 's/^\([0-4]\.[.0-9]*\).*$/\1/g'`
+	kmain=`echo $kv|cut -d. -f1`
+	krel=`echo $kv|cut -d. -f2`
+	kmin=`echo $kv|cut -d. -f3`
+	if [ $kmain -eq 3 ];then
+		# We have a third generation Kernel, so TRIM is available.
+		pos5="kernelTRIM"
+	else
+		if [ $kmain -eq 2 ] && [ $krel -eq 6 ] && [ $kmin -ge 40 ]; then
+			pos5="kernelTRIM"
+		fi
+	fi
+	[ -z $pos5 ] && pos5="NOkernelTRIM"
+
+	# pos6: fstrim available?
+	find_tool fstrim soft; FSTRIM=$TOOL
+	[ -z $FSTRIM ] && pos6="noFSTRIM" || pos6="$FSTRIM"
+
+	# Now return what we got
+	echo "$pos1:$pos2:$pos3:$pos4:$pos5:$pos6"
+	
+}
+
+find_tool () {
+	# find_tool searches for the overgiven tool in well known places. If the tool
+	# can be found it returns its path. If the tool can not be found the program
+	# exits (since all tools searched with find_tool should be found on every linux
+	# system). Use soft as a second option if you do not want to explicitly exit this
+	# program.
+	tool=$1
+	stat=""
+	for pathes in /usr/sbin /usr/bin /sbin /bin /opt/bin /usr/local/sbin /usr/local/bin; do
+		[ -f ${pathes}/${tool} ] && { stat="${pathes}/${tool}"; break; }
+	done
+	if [ -z $stat ] && [ -z $2 ]; then
+		echo "ERROR: The necessary program $tool has not been found on this system."
+		echo "ERROR: This is a critical error, therefore we exit now. Nothing will be"
+		echo "ERROR: done, nothing will be trimmed."
+		exit
+	fi
+	TOOL=$stat
+}
+
+showusage () {
+clear
+cat<<EOF
+USAGE:
+
+`$BASENAME $0` [-h|--help]
+`$BASENAME $0` [-d|--deinsall]
+`$BASENAME $0` -v
+
+-h, --help          Show this help screen and exit
+-d, --deinstall     Removes any cronjob created by `$BASENAME $0` and
+                    also deletes the installed man page. To reinstall
+                    `$BASENAME $0` just start it without option.
+-v                  print the version of `$BASENAME $0` and exit
+
+`$BASENAME $0` is an intelligent cronjob which, depending on the usage of
+your SSD Disk(s), automatically decides how often the SSD(s) should be trimmed.
+The more data you have on your SSD(s) the more often they will be trimmed.
+
+It is intended as a fire and forget app which, once installed, does everything
+fully automated. In fact it is so clever, you should be able to install it on
+any linux system without using the package manager of your distribution. Just
+open this script with your favorite text editor, add the partition(s) which
+should be trimmed (as a space separated list into the SSD_MOUNT_POINTS
+variable) and then execute `$BASENAME $0` without any option.
+
+Beside the needed cron job(s) it also creates a man page on the fly. Both, the
+cron job(s) and manual page installation does not interfere with your existing
+distribution. And if you want to get rid of this script just start it with the
+deinstall option and it will remove any cron job(s) and the man page.
+
+EOF
+exit 0
+};
+
+deinstall () {
+	# deinstall does either a hard or soft deinstallation. The difference is,
+	# that a soft deinstallation only removes the cronjob files without any
+	# notification, whereas a hard deinstallation also removes the manual page
+	# and does a notification about the completely deinstalled SSDcronTRIM.
+	[ ! -z $1 ] && SOFT="true"
+	
+	if [ -z $SOFT ]; then
+		# Hard deletion = remove man page
+		for mpath in /usr/share/man /usr/local/share/man /usr/man;do
+			fpath=${mpath}/man1/SSDcronTRIM.1
+			[ -f ${fpath} ] && { rm ${fpath}; echo "SSDcronTRIM man page ($fpath) removed."; break; }
+		done
+	fi
+
+	if [ "$ctool" == "crondirs" ];then
+		for dir in monthly weekly daily hourly;do
+			$FIND /etc/cron.${dir} -nowarn -name "SSDcronTRIM_part-*" -type f -print
+		done|xargs rm -f
+	else
+		epath="/tmp/SSDcronTRIMcrontabEDIT"
+		${ctool} -l | $GREP -v SSDcronTRIM_part > ${epath}
+		${ctool} ${epath}
+		rm ${epath}
+		rm -f ${CRONTAB_DIR}/SSDcronTRIM_part-*
+	fi
+
+	if [ -z $SOFT ]; then
+		echo "All SSDcronTRIM cron jobs removed."
+	fi
+}
+
+create_man () {
+	# create_man does first a check if the man page still exists. It will
+	# create the man page otherwise. Overgive the path to the file which
+	# should be created.
+	newfpath=$1
+
+	if [ ! -f $newfpath ]; then
+cat<<EOF >$newfpath
+.\" Manpage for SSDcronTRIM.
+.\" Contact m.egger@matse.ch to correct errors or typos.
+.TH SSDcronTRIM "1" "February 2014" "1.0" "SSDcronTRIM man page"
+.SH NAME
+SSDcronTRIM \- Intelligent SSD cron job which decides when to TRIM
+.SH SYNOPSIS
+.B SSDcronTRIM
+[\fIOPTION\fR]
+.SH DESCRIPTION
+.\" Add any additional description here
+.PP
+SSDcronTRIM is an intelligent cronjob which, depending on the usage of
+your SSD Disk(s), automatically decides how often the SSD(s) should be trimmed.
+The more data you have on your SSD(s) the more often they will be trimmed. The
+trim ratio is defined as follows:
+.PP
+.BD -literal
+ \.\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\.\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\.
+ | Used space in % | Amount of trims |
+ |\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-|\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-|
+ |   85% \- 100%    |     Hourly      |
+ |   60% \-  84%    |     Daily       |
+ |   31% \-  59%    |     Weekly      |
+ |    0% \-  30%    |     Monthly     |
+ \\\`\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\^\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\'
+.ED
+.PP
+SSDcronTRIM is intended as a \fIfire and forget\fR app which, once installed, does
+everything fully automated. In fact it is so clever, you should be able to
+install it on any linux system without using the package manager of your
+distribution.
+.PP
+Just open the SSDcronTRIM script with your favorite text editor, add the
+partition(s) which should be trimmed (as a space separated list into the
+SSD_MOUNT_POINTS variable) and then execute SSDcronTRIM without any option.
+.PP
+To trimm a partition SSDcronTRIM uses the \fBfstrim\fR command, which should
+be installed on any modern system, since it is part of the \fButil\-linux\fR
+package.
+.SH OPTIONS
+.PP
+SSDcronTRIM does not need any option to work. Just start it once and it will
+install itself as one or more cronjob(s) (depending on how many SSD partitions
+have to be trimmed). Nevertheless it understands the following options.
+.TP
+\fB\-d\fR, \fB\-\-deinstall\fR
+Use the deinstall option to remove all cron jobs which have been created by
+SSDcronTRIM and to delete this man page. This is something like a self
+desctruction option. If you have not created a backup of SSDcronTRIM you have
+to re-download and re-add your settings again.
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Show a summary of this man page.
+.TP
+\fB\-v\fR
+print the version of SSDcronTRIM and exit
+.SH SEE ALSO
+fstrim(8)
+.SH BUGS
+No known bugs.
+.SH AUTHOR
+Matthias Egger <m.egger@matse.ch>
+EOF
+	fi
+}
+
+CreateCron () {
+	# CreateCron creates the cronfiles and if necessary also the crontab entry.
+	# USAGE: CreateCron "monthly|weekly|daily|hourly" "<mountpoint>" "dir|/some/path/for/cronfiles"
+	ctype="$1"
+	mop="$2"
+	ipath="$3"
+
+	# First we need to replace all / in the pathes with _slash_
+	mpstripped="`echo $mop|$SED -e 's#/#_slash_#g' -e 's/ /_space_/g'`"
+
+	# Now install the script
+	if [ "$ipath" == "dir" ];then
+		# Install it into /etc/cron.{monthly,weekly,daily,hourly}
+		cp $MEIMYSELF "/etc/cron.${ctype}/SSDcronTRIM_part-${mpstripped}"
+	else
+		# Install it to some path and edit crontab
+		cp $MEIMYSELF "${ipath}/SSDcronTRIM_part-${mpstripped}"
+		epath="/tmp/SSDcronTRIMcrontabEDIT"
+		${ctool} -l > ${epath}
+		if [ "$ctype" == "monthly" ];then
+			echo "0 0 1 * * ${ipath}/SSDcronTRIM_part-${mpstripped}" >> ${epath}
+		elif [ "$ctype" == "weekly" ]; then
+			echo "0 0 * * 0 ${ipath}/SSDcronTRIM_part-${mpstripped}" >> ${epath}
+		elif [ "$ctype" == "daily" ]; then
+			echo "0 0 * * * ${ipath}/SSDcronTRIM_part-${mpstripped}" >> ${epath}
+		elif [ "$ctype" == "hourly" ]; then
+			echo "0 * * * * ${ipath}/SSDcronTRIM_part-${mpstripped}" >> ${epath}
+		fi
+		${ctool} ${epath}
+		rm ${epath}
+	fi
+}
+
+##### [ M A I N ] #########################################################
+
+# Check if some elementary system tools are available
+find_tool tr; TR=$TOOL
+find_tool cut; CUT=$TOOL
+find_tool mount; MOUNT=$TOOL
+find_tool uname; UNAME=$TOOL
+find_tool sed; SED=$TOOL
+find_tool find; FIND=$TOOL
+find_tool grep; GREP=$TOOL
+find_tool df; DF=$TOOL
+find_tool basename; BASENAME=$TOOL
+
+# Was this script started with any option?
+if [ ! -z $1 ]; then
+	if [ "$1" == "-h" ] || [ "$1" == "--help" ];then
+		showusage
+	fi
+	if [ "$1" == "-v" ];then
+		echo "`$BASENAME $0` - Version $version"
+		exit 0
+	fi
+	if [ "$1" == "-d" ] || [ "$1" == "--deinstall" ];then
+		DEINSTALL="true"
+	fi
+	[ -z $DEINSTALL ] && showusage
+fi
+
+# Since we always remove the cronjob files, we need to make a temporary backup
+# of this file. Otherwise we would remove ourself :-(
+MEIMYSELF="/tmp/SSDcronTRIM"
+MYNAME=`$BASENAME $0`
+cp $0 $MEIMYSELF
+
+# Check if mandatory settings (like Kernel with TRIM support etc.) are (still) available.
+STATE=`init_check`
+ruser="`echo $STATE|cut -d: -f1`"; ctool="`echo $STATE|cut -d: -f2`"; fsmnt="`echo $STATE|cut -d: -f3`"
+hwsup="`echo $STATE|cut -d: -f4`"; krnls="`echo $STATE|cut -d: -f5`"; FSTRIM="`echo $STATE|cut -d: -f6`"
+if [ "$ruser" == "nonroot" ] || [ "$ctool" == "nocron" ] || [ ! "$fsmnt" == "supported" ] ||
+   [ ! "$hwsup" == "hwtrim" ] || [ "$krnls" == "NOkernelTRIM" ] || [ "$FSTRIM" == "noFSTRIM" ]; then
+	echo "ERROR Report for $0"
+	echo -en '----------------------------------------------------------------------\n'
+	MSG=""
+	if [ "$ruser" == "nonroot" ]; then
+	  MSG="${MSG}\nERROR: Please start this script only as root, since this tool has to\n"
+	  MSG="${MSG}ERROR: access filesystems and cronjobs directly (which can't be done as\n"
+	  MSG="${MSG}ERROR: a regular user).\n"
+	fi
+	if [ "$ctool" == "nocron" ]; then
+	  MSG="${MSG}\nERROR: Well, this tool does most of it's magic as a cron job. But on\n"
+	  MSG="${MSG}ERROR: this system there was no /etc/cron.{monthly,weekly,daily,hourly}\n"
+	  MSG="${MSG}ERROR: directory nor a crontab executable.\n"
+	fi
+	if [ ! "$fsmnt" == "supported" ]; then
+	  MSG="${MSG}\nERROR: You have specified $fsmnt in SSD_MOUNT_POINTS but\n"
+	  MSG="${MSG}ERROR: either the partition was not mounted (fstrim only works on\n"
+	  MSG="${MSG}ERROR: mounted partitions) or its filesystem does not support the FITRIM\n"
+	  MSG="${MSG}ERROR: Feature. Currently this Feature is only supported by the following\n"
+	  MSG="${MSG}ERROR: filesystems: `echo ${TRIMMABLE_FS}|$TR , ' '`\n"
+	fi
+	if [ ! "$hwsup" == "hwtrim" ]; then
+	  MSG="${MSG}\nERROR: You have specified $hwsup in SSD_MOUNT_POINTS but\n"
+	  MSG="${MSG}ERROR: it looks like the disk itself does not support any TRIMMING.\n"
+	  MSG="${MSG}ERROR: Is the disk really an SSD Disk?\n"
+	fi
+	if [ "$krnls" == "NOkernelTRIM" ]; then
+	  MSG="${MSG}\nERROR: Your Kernel (`uname -r`) does not support FITRIM. Please make\n"
+	  MSG="${MSG}ERROR: sure you use at least an 2.6.40 kernel.\n"
+	fi
+	if [ "$FSTRIM" == "noFSTRIM" ]; then
+	  MSG="${MSG}\nERROR: Sorry, but i could not locate the fstrim tool on this system.\n"
+	  MSG="${MSG}ERROR: Usually it can be found as part of the util-linux or util-linux-ng\n"
+	  MSG="${MSG}ERROR: package and should be installed on any modern Linux system.\n"
+	fi
+
+	echo -e "$MSG"
+	echo -en '----------------------------------------------------------------------\n'
+	exit 1
+fi
+
+# Finally we can de-/install or use this script.
+if [ -z $DEINSTALL ]; then
+	# First we remove any installed cronjobs. Since the last TRIM could have been
+	# last month, the SSD could have be filled with lots of data. Therefore we just
+	# remove any cronjob and then reinstall them later.
+	deinstall soft
+
+	# Get the Mountpoint we should trim later
+	MP="`echo $MYNAME|$SED -e 's#_slash_#/#g' -e 's/_space_/ /g' -e 's/^SSDcronTRIM_part-//g'`"
+	NewOrOld=0
+
+	for part in $SSD_MOUNT_POINTS;do
+		# How many percent of space is used on this disk?
+		partusage=`$DF $part|$GREP "$part"|$TR -s [:blank:]|$CUT -d' ' -f5|$CUT -d% -f1`
+
+		# Try to install the SSDcronTRIM man page
+		for mpath in /usr/share/man /usr/local/share/man /usr/man;do
+			fpath=${mpath}/man1/SSDcronTRIM.1
+			[ -d ${mpath}/man1 ] && { create_man ${fpath}; break; }
+		done
+
+		if [ "$ctool" == "crondirs" ];then
+			# Install this script to /etc/cron.{daily,hourly,monthly,weekly}
+			DTYPE="dir"
+		else
+			# We use crontab, so install the script into $CRONTAB_DIR
+			DTYPE="${CRONTAB_DIR}"
+		fi
+
+		# Now create the cron job
+		if [ $partusage -le 30 ]; then
+			CreateCron "monthly" "${part}" "$DTYPE"
+		elif [ $partusage -ge 31 ] && [ $partusage -le 49]; then
+			CreateCron "weekly" "${part}" "$DTYPE"
+		elif [ $partusage -ge 60 ] && [ $partusage -le 84]; then
+			CreateCron "daily" "${part}" "$DTYPE"
+		elif [ $partusage -ge 85 ]; then
+			CreateCron "hourly" "${part}" "$DTYPE"
+		fi
+
+		# Is this a fresh installation or just an initiated cronjob?
+		[ "${MP}" == "$part" ] && NewOrOld=1
+		
+	done
+
+	# Now the most important part; Let us trim (if this is not a fresh installation)!
+	[ $NewOrOld -eq 1 ] && ${FSTRIM} $MP
+else
+	deinstall
+fi
+
+# Cleanup
+rm $MEIMYSELF
+
+exit
