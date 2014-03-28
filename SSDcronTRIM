@@ -471,7 +471,7 @@ if [ -z $DEINSTALL ]; then
 		# Now create the cron job
 		if [ $partusage -le 30 ]; then
 			CreateCron "monthly" "${part}" "$DTYPE"
-		elif [ $partusage -ge 31 ] && [ $partusage -le 49 ]; then
+		elif [ $partusage -ge 31 ] && [ $partusage -le 59 ]; then
 			CreateCron "weekly" "${part}" "$DTYPE"
 		elif [ $partusage -ge 60 ] && [ $partusage -le 84 ]; then
 			CreateCron "daily" "${part}" "$DTYPE"
