@@ -146,8 +146,8 @@ init_check () {
 	kmain=`echo $kv|cut -d. -f1`
 	krel=`echo $kv|cut -d. -f2`
 	kmin=`echo $kv|cut -d. -f3`
-	if [ $kmain -eq 3 ];then
-		# We have a third generation Kernel, so TRIM is available.
+	if [ $kmain -ge 3 ];then
+		# We have a third generation Kernel or newer, so TRIM is available.
 		pos5="kernelTRIM"
 	else
 		if [ $kmain -eq 2 ] && [ $krel -eq 6 ] && [ $kmin -ge 40 ]; then
