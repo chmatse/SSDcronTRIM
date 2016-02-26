@@ -1,5 +1,5 @@
 #!/bin/bash
-version="1.00"
+version="1.04"
 
 ###########################################################################
 #
@@ -7,7 +7,19 @@ version="1.00"
 # Author:  Matthias Egger <m.egger@matse.ch>
 # Purpose: intelligent cron job script which automatically
 #          decides how often to trim one or more SSD partitions.
-# History: 
+# History:
+#          1.04 - 2016-02-26 - Multiple changes made:
+#                              * Insecure usage of temporary files changed.
+#                                Thanks to carnil for pointing that out!
+#                              * Added History of changes into the script.
+#                              * find_tool function errors did not exit the
+#                                program and instead led to strange outputs.
+#          1.03 - 2015-05-03 - Bumping the version check so it captures
+#                              Kernels 3.0+ 
+#          1.02 - 2014-03-28 - Typo prevented Trimming between 50% and 59%
+#                              Usage. Thanks goes to Diego Coste.
+#          1.01 - 2014-03-21 - Missed whitespaces while checking the
+#                              partition usage. Found by mastropos.
 #          1.00 - 2014-02-22 - Initial Release
 # License:
 #    This program is free software: you can redistribute it and/or modify
@@ -60,8 +72,8 @@ CRONTAB_DIR="/etc/cron.d"
 # The list is created by searching for FITRIM in the kernel sources.
 #
 # cd /usr/src/linux
-# Grep -lr FITRIM fs/ | cut -d/ -f2 | sort | uniq | xargs echo
-TRIMMABLE_FS="btrfs,ext3,ext4,gfs2,jfs,ocfs2,xfs"
+# grep -lr FITRIM fs/ | cut -d/ -f2 | sort | uniq | xargs echo
+TRIMMABLE_FS="btrfs,ecryptfs,ext3,ext4,f2fs,gfs2,jfs,nilfs2,ocfs2,xfs"
 
 
 
@@ -177,9 +189,13 @@ find_tool () {
 		[ -f ${pathes}/${tool} ] && { stat="${pathes}/${tool}"; break; }
 	done
 	if [ -z $stat ] && [ -z $2 ]; then
-		echo "ERROR: The necessary program $tool has not been found on this system."
-		echo "ERROR: This is a critical error, therefore we exit now. Nothing will be"
-		echo "ERROR: done, nothing will be trimmed."
+		echo "ERROR: The necessary program $tool has not been found on this system." 1>&2
+		echo "ERROR: This is a critical error, therefore we exit now. Nothing will be" 1>&2
+		echo "ERROR: done, nothing will be trimmed." 1>&2
+		# Okay, we have to exit here. But first do some cleanup before exiting.
+		[ ! -z ${epath} ] && rm -f ${epath}
+		[ ! -z ${MEIMYSELF} ] && rm -f ${MEIMYSELF}
+		kill -s TERM $TOP_PID
 		exit
 	fi
 	TOOL=$stat
@@ -240,7 +256,7 @@ deinstall () {
 			$FIND /etc/cron.${dir} -nowarn -name "SSDcronTRIM_part-*" -type f -print
 		done|xargs rm -f
 	else
-		epath="/tmp/SSDcronTRIMcrontabEDIT"
+		epath="`${MKTEMP} -p /tmp SSDcronTRIMcrontabEDIT.XXXXXXXXXX`"
 		${ctool} -l | $GREP -v SSDcronTRIM_part > ${epath}
 		${ctool} ${epath}
 		rm ${epath}
@@ -262,7 +278,7 @@ create_man () {
 cat<<EOF >$newfpath
 .\" Manpage for SSDcronTRIM.
 .\" Contact m.egger@matse.ch to correct errors or typos.
-.TH SSDcronTRIM "1" "February 2014" "1.0" "SSDcronTRIM man page"
+.TH SSDcronTRIM "1" "February 2016" "1.04" "SSDcronTRIM man page"
 .SH NAME
 SSDcronTRIM \- Intelligent SSD cron job which decides when to TRIM
 .SH SYNOPSIS
@@ -343,7 +359,7 @@ CreateCron () {
 	else
 		# Install it to some path and edit crontab
 		cp $MEIMYSELF "${ipath}/SSDcronTRIM_part-${mpstripped}"
-		epath="/tmp/SSDcronTRIMcrontabEDIT"
+		epath="`${MKTEMP} -p /tmp SSDcronTRIMcrontabEDIT.XXXXXXXXXX`"
 		${ctool} -l > ${epath}
 		if [ "$ctype" == "monthly" ];then
 			echo "0 0 1 * * ${ipath}/SSDcronTRIM_part-${mpstripped}" >> ${epath}
@@ -361,6 +377,12 @@ CreateCron () {
 
 ##### [ M A I N ] #########################################################
 
+# Just make sure we can exit from Subshells. Whenever we send from within a
+# function a TERM signal to the TOPLEVEL PID, this gets caught (by trap) and
+# finally exits this program.
+trap "exit 1" TERM
+export TOP_PID=$$
+
 # Check if some elementary system tools are available
 find_tool tr; TR=$TOOL
 find_tool cut; CUT=$TOOL
@@ -371,6 +393,7 @@ find_tool find; FIND=$TOOL
 find_tool grep; GREP=$TOOL
 find_tool df; DF=$TOOL
 find_tool basename; BASENAME=$TOOL
+find_tool mktemp; MKTEMP=$TOOL
 
 # Was this script started with any option?
 if [ ! -z $1 ]; then
@@ -389,7 +412,7 @@ fi
 
 # Since we always remove the cronjob files, we need to make a temporary backup
 # of this file. Otherwise we would remove ourself :-(
-MEIMYSELF="/tmp/SSDcronTRIM"
+MEIMYSELF="`${MKTEMP} -p /tmp SSDcronTRIMcrontabEDIT.XXXXXXXXXX`"
 MYNAME=`$BASENAME $0`
 cp $0 $MEIMYSELF
 

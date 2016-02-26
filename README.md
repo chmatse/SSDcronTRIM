@@ -22,7 +22,7 @@ cron job(s) and the man page.
 
 --
 
-SSDcronTRIM Copyright 2014 Matthias Egger
+SSDcronTRIM Copyright 2016 Matthias Egger
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
