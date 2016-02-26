@@ -20,6 +20,8 @@ with your existing distribution. And if you want to get rid of this
 script just start it with the deinstall option and it will remove any
 cron job(s) and the man page.
 
+For more information on how to get and install SSDcronTRIM see:
+http://chmatse.github.io/SSDcronTRIM/
 --
 
 SSDcronTRIM Copyright 2016 Matthias Egger
