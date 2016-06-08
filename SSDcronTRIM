@@ -1,5 +1,5 @@
 #!/bin/bash
-version="1.04"
+version="1.05"
 
 ###########################################################################
 #
@@ -8,6 +8,11 @@ version="1.04"
 # Purpose: intelligent cron job script which automatically
 #          decides how often to trim one or more SSD partitions.
 # History:
+#          1.05 - 2016-06-08 - Adding mktemp in the last version led to
+#                              cronjobs with 0600 permissions. Therefore
+#                              they were never executed :-( Thanks to
+#                              Christian Dysthe for bringing it to my
+#                              attention!
 #          1.04 - 2016-02-26 - Multiple changes made:
 #                              * Insecure usage of temporary files changed.
 #                                Thanks to carnil for pointing that out!
@@ -356,9 +361,11 @@ CreateCron () {
 	if [ "$ipath" == "dir" ];then
 		# Install it into /etc/cron.{monthly,weekly,daily,hourly}
 		cp $MEIMYSELF "/etc/cron.${ctype}/SSDcronTRIM_part-${mpstripped}"
+		chmod --reference=${0} "/etc/cron.${ctype}/SSDcronTRIM_part-${mpstripped}"
 	else
 		# Install it to some path and edit crontab
 		cp $MEIMYSELF "${ipath}/SSDcronTRIM_part-${mpstripped}"
+		chmod --reference=${0} "${ipath}/SSDcronTRIM_part-${mpstripped}"
 		epath="`${MKTEMP} -p /tmp SSDcronTRIMcrontabEDIT.XXXXXXXXXX`"
 		${ctool} -l > ${epath}
 		if [ "$ctype" == "monthly" ];then
