@@ -1,5 +1,5 @@
 #!/bin/bash
-version="1.05"
+version="1.06"
 
 ###########################################################################
 #
@@ -8,6 +8,12 @@ version="1.05"
 # Purpose: intelligent cron job script which automatically
 #          decides how often to trim one or more SSD partitions.
 # History:
+#	   1.06 - 2017-07-24 - Using chmod --reference seemed to be a good
+#                              quick fix. But when it comes to "renew" the
+#                              cronjobs it took itself (with 600 perms) as
+#                              reference. Therefore we hardcode now the 740 
+#                              permissions which should finally fix all
+#                              permission problems. Also corrected a typo.
 #          1.05 - 2016-06-08 - Adding mktemp in the last version led to
 #                              cronjobs with 0600 permissions. Therefore
 #                              they were never executed :-( Thanks to
@@ -212,7 +218,7 @@ cat<<EOF
 USAGE:
 
 `$BASENAME $0` [-h|--help]
-`$BASENAME $0` [-d|--deinsall]
+`$BASENAME $0` [-d|--deinstall]
 `$BASENAME $0` -v
 
 -h, --help          Show this help screen and exit
@@ -361,11 +367,11 @@ CreateCron () {
 	if [ "$ipath" == "dir" ];then
 		# Install it into /etc/cron.{monthly,weekly,daily,hourly}
 		cp $MEIMYSELF "/etc/cron.${ctype}/SSDcronTRIM_part-${mpstripped}"
-		chmod --reference=${0} "/etc/cron.${ctype}/SSDcronTRIM_part-${mpstripped}"
+		chmod 740 "/etc/cron.${ctype}/SSDcronTRIM_part-${mpstripped}"
 	else
 		# Install it to some path and edit crontab
 		cp $MEIMYSELF "${ipath}/SSDcronTRIM_part-${mpstripped}"
-		chmod --reference=${0} "${ipath}/SSDcronTRIM_part-${mpstripped}"
+		chmod 740 "${ipath}/SSDcronTRIM_part-${mpstripped}"
 		epath="`${MKTEMP} -p /tmp SSDcronTRIMcrontabEDIT.XXXXXXXXXX`"
 		${ctool} -l > ${epath}
 		if [ "$ctype" == "monthly" ];then
