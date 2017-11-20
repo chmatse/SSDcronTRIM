@@ -24,7 +24,7 @@ For more information on how to get and install SSDcronTRIM see:
 http://chmatse.github.io/SSDcronTRIM/
 --
 
-SSDcronTRIM Copyright 2016 Matthias Egger
+SSDcronTRIM Copyright 2014-2017 Matthias Egger
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
